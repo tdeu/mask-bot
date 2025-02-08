@@ -54,6 +54,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     return ConversationHandler.END
 
+async def healthcheck(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Health check command to verify bot is running."""
+    await update.message.reply_text("Bot is running and healthy!")
+
 def main() -> None:
     logger.info("Démarrage du bot")
     application = Application.builder().token(BOT_TOKEN).build()
@@ -70,6 +74,7 @@ def main() -> None:
     
     application.add_handler(mask_conv_handler)
     application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(CommandHandler("health", healthcheck))
 
     logger.info("Début de l'écoute des mises à jour")
     application.run_polling(allowed_updates=Update.ALL_TYPES)

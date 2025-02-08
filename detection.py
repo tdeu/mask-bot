@@ -63,22 +63,48 @@ try:
     except TypeError as e:
         if "batch_shape" in str(e):
             logger.info("Attempting alternative model loading method...")
-            # Create a new input layer
-            inputs = tf.keras.Input(shape=(224, 224, 3))
-            # Load model without input layer
-            model = tf.keras.models.load_model(
-                temp_model_path, 
-                custom_objects=custom_objects,
-                compile=False
-            )
-            # Rebuild model with new input
-            outputs = model(inputs)
-            model = tf.keras.Model(inputs=inputs, outputs=outputs)
+            try:
+                # Try loading with experimental IO
+                model = tf.keras.models.load_model(
+                    temp_model_path, 
+                    custom_objects=custom_objects,
+                    compile=False,
+                    options=tf.saved_model.LoadOptions(experimental_io_device='/job:localhost')
+                )
+            except:
+                # If that fails, try reconstructing the model
+                logger.info("Attempting model reconstruction...")
+                base_model = tf.keras.applications.ResNet50(
+                    include_top=False,
+                    weights=None,
+                    input_shape=(224, 224, 3)
+                )
+                x = tf.keras.layers.GlobalAveragePooling2D()(base_model.output)
+                x = tf.keras.layers.Dense(512, activation='relu')(x)
+                x = tf.keras.layers.BatchNormalization()(x)
+                x = tf.keras.layers.Dropout(0.5)(x)
+                outputs = tf.keras.layers.Dense(30, activation='softmax')(x)
+                model = tf.keras.Model(inputs=base_model.input, outputs=outputs)
+                
+                # Load weights only
+                model.load_weights(temp_model_path)
             
     # Clean up the temporary file
     os.remove(temp_model_path)
+    logger.info("Model loaded successfully")
 except Exception as e:
     logger.error(f"Failed to load model: {e}")
+    raise
+
+# Add this after model loading
+try:
+    # Test the model with a dummy input to ensure it's working
+    logger.info("Testing model with dummy input...")
+    dummy_input = np.zeros((1, 224, 224, 3))
+    _ = model.predict(dummy_input)
+    logger.info("Model test successful")
+except Exception as e:
+    logger.error(f"Model test failed: {e}")
     raise
 
 # Define tribe mapping (copied from your classify_mask.py)
