@@ -11,6 +11,7 @@ from layers import Cast  # Add this import
 import tempfile  # Add this import
 from dotenv import load_dotenv
 import json
+import h5py
 
 # Load environment variables
 load_dotenv()
@@ -59,54 +60,37 @@ try:
     }
     
     try:
+        # First attempt: Direct loading
         model = tf.keras.models.load_model(temp_model_path, custom_objects=custom_objects)
     except TypeError as e:
         if "batch_shape" in str(e):
             logger.info("Attempting alternative model loading method...")
             try:
-                # Try loading with experimental IO
-                model = tf.keras.models.load_model(
-                    temp_model_path, 
-                    custom_objects=custom_objects,
-                    compile=False,
-                    options=tf.saved_model.LoadOptions(experimental_io_device='/job:localhost')
-                )
-            except:
-                # If that fails, try loading as h5 file directly
-                logger.info("Attempting to load h5 file directly...")
-                try:
-                    import h5py
-                    with h5py.File(temp_model_path, 'r') as f:
-                        model_config = f.attrs.get('model_config')
-                        if model_config is not None:
-                            # Handle both string and bytes cases
-                            if isinstance(model_config, bytes):
-                                model_config = model_config.decode('utf-8')
-                            model_config = json.loads(model_config)
-                            logger.info("Successfully loaded model config")
-                            
-                            # Create model from config
-                            model = tf.keras.models.model_from_config(
-                                model_config,
-                                custom_objects=custom_objects
-                            )
-                            logger.info("Created model from config")
-                            
-                            # Load weights
-                            model.load_weights(temp_model_path)
-                            logger.info("Loaded weights successfully")
-                        else:
-                            raise ValueError("Could not find model architecture in h5 file")
-                except Exception as e:
-                    logger.error(f"Failed to load h5 file directly: {str(e)}")
-                    # Try one last approach - load as SavedModel
-                    logger.info("Attempting to load as SavedModel...")
-                    try:
-                        model = tf.saved_model.load(temp_model_path)
-                        logger.info("Successfully loaded as SavedModel")
-                    except Exception as e2:
-                        logger.error(f"All loading methods failed. Last error: {str(e2)}")
-                        raise
+                # Create input layer manually
+                inputs = tf.keras.Input(shape=(224, 224, 3), name='input_layer')
+                
+                # Load model architecture from config
+                with h5py.File(temp_model_path, 'r') as f:
+                    model_config = f.attrs.get('model_config')
+                    if isinstance(model_config, bytes):
+                        model_config = model_config.decode('utf-8')
+                    config = json.loads(model_config)
+                    
+                    # Remove problematic input layer config
+                    if 'layers' in config['config']:
+                        config['config']['layers'] = [
+                            layer for layer in config['config']['layers'] 
+                            if layer['class_name'] != 'InputLayer'
+                        ]
+                    
+                    # Create model with our manual input
+                    model = tf.keras.Model.from_config(config, custom_objects=custom_objects)
+                    model.load_weights(temp_model_path)
+                    
+                logger.info("Successfully loaded model with manual input layer")
+            except Exception as e2:
+                logger.error(f"Alternative loading failed: {str(e2)}")
+                raise
             
     # Clean up the temporary file
     os.remove(temp_model_path)
