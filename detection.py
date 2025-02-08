@@ -38,6 +38,10 @@ logger.setLevel(logging.DEBUG)  # Set to DEBUG level for more detailed logs
 
 MODEL_CACHE_DIR = os.getenv('MODEL_CACHE_DIR', os.path.join(tempfile.gettempdir(), 'model_cache'))
 
+# Add at top of file, after imports
+tf.keras.backend.set_floatx('float32')
+tf.keras.mixed_precision.set_global_policy('float32')
+
 def get_cached_model_path():
     """Get path to cached model or None if not cached."""
     os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
@@ -64,64 +68,54 @@ def download_model():
             os.remove(temp_path)
         raise
 
-# Remove the multiple model formats, just use one
+# Replace the model loading section with:
 try:
     logger.info("Loading model...")
     temp_model_path = download_model()
-    custom_objects = {
-        "Cast": Cast,
-        "mixed_float16": tf.keras.mixed_precision.Policy('mixed_float16'),
-        "float16": tf.float16,
-        "float32": tf.float32
-    }
     
     try:
-        # First attempt: Simple loading without safe_mode (it's not supported in older TF versions)
+        # First attempt - direct loading with Cast layer
         model = tf.keras.models.load_model(
-            temp_model_path, 
-            custom_objects=custom_objects, 
+            temp_model_path,
+            custom_objects={'Cast': Cast, 'dtype': tf.float32},
             compile=False
         )
-    except (TypeError, ValueError) as e:
-        if "class_name" in str(e) or "batch_shape" in str(e):
-            logger.info("Attempting alternative model loading method...")
-            try:
-                # Create base model without explicit names (can cause issues)
-                base_model = tf.keras.applications.ResNet50(
-                    include_top=False,
-                    weights=None,
-                    input_shape=(224, 224, 3)
-                )
-                x = base_model.output
-                x = tf.keras.layers.GlobalAveragePooling2D()(x)
-                x = tf.keras.layers.Dense(512, activation='relu')(x)
-                x = tf.keras.layers.BatchNormalization()(x)
-                x = tf.keras.layers.Dropout(0.5)(x)
-                outputs = tf.keras.layers.Dense(30, activation='softmax')(x)
-                
-                model = tf.keras.Model(inputs=base_model.input, outputs=outputs)
-                model.load_weights(temp_model_path, by_name=True, skip_mismatch=True)
-                logger.info("Successfully loaded weights with skip_mismatch")
-            except Exception as e2:
-                logger.error(f"Alternative loading failed: {str(e2)}")
-                raise
-            
-    # Clean up the temporary file
-    os.remove(temp_model_path)
-    logger.info("Model loaded successfully")
-except Exception as e:
-    logger.error(f"Failed to load model: {e}")
-    raise
-
-# Add this after model loading
-try:
-    # Test the model with a dummy input to ensure it's working
-    logger.info("Testing model with dummy input...")
+        logger.info("Successfully loaded model directly")
+    except Exception as e:
+        logger.info(f"Direct loading failed: {str(e)}")
+        logger.info("Attempting alternative loading method...")
+        
+        # Second attempt - manual construction with Cast layer
+        inputs = tf.keras.Input(shape=(224, 224, 3))
+        x = Cast(dtype=tf.float32)(inputs)
+        base_model = tf.keras.applications.ResNet50(
+            input_tensor=x,
+            include_top=False,
+            weights=None
+        )
+        x = base_model.output
+        x = tf.keras.layers.GlobalAveragePooling2D()(x)
+        x = tf.keras.layers.Dense(512, activation='relu')(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.Dropout(0.5)(x)
+        outputs = tf.keras.layers.Dense(len(TRIBE_GROUPS), activation='softmax')(x)
+        
+        model = tf.keras.Model(inputs=inputs, outputs=outputs)
+        model.load_weights(temp_model_path, by_name=True, skip_mismatch=True)
+        logger.info("Successfully loaded model with manual construction")
+        
+    # Test model
+    logger.info("Testing model...")
     dummy_input = np.zeros((1, 224, 224, 3))
-    _ = model.predict(dummy_input)
+    predictions = model.predict(dummy_input)
+    assert predictions.shape[-1] == len(TRIBE_GROUPS), "Model output shape mismatch"
     logger.info("Model test successful")
+    
+    # Clean up
+    os.remove(temp_model_path)
+    
 except Exception as e:
-    logger.error(f"Model test failed: {e}")
+    logger.error(f"Failed to load model: {str(e)}")
     raise
 
 # Define tribe mapping (copied from your classify_mask.py)

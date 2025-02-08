@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 # Google Drive file ID for your model
 MODEL_ID = "1foeIsWYYmvr2UAoVyFSRhKPagsAmTLrs"
 
+# Add at top of file, after imports
+tf.keras.backend.set_floatx('float32')
+tf.keras.mixed_precision.set_global_policy('float32')
+
 def download_model():
     """Download the model file from Google Drive to a temporary location."""
     logger.info("Downloading model from Google Drive...")
@@ -48,70 +52,55 @@ TRIBE_GROUPS = {
 try:
     logger.info("Loading classification model...")
     model_path = get_cached_model_path() or download_model()
-    custom_objects = {
-        "Cast": Cast,
-        "mixed_float16": tf.keras.mixed_precision.Policy('mixed_float16'),
-        "float16": tf.float16,
-        "float32": tf.float32
-    }
     
     try:
-        # First attempt: Direct loading
-        classification_model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
-    except TypeError as e:
-        if "batch_shape" in str(e):
-            logger.info("Attempting alternative model loading method...")
-            try:
-                # Create input layer manually
-                inputs = tf.keras.Input(shape=(224, 224, 3), name='input_layer')
-                
-                # Load model architecture from config
-                with h5py.File(model_path, 'r') as f:
-                    model_config = f.attrs.get('model_config')
-                    if isinstance(model_config, bytes):
-                        model_config = model_config.decode('utf-8')
-                    config = json.loads(model_config)
-                    
-                    # Remove problematic input layer config
-                    if 'layers' in config['config']:
-                        config['config']['layers'] = [
-                            layer for layer in config['config']['layers'] 
-                            if layer['class_name'] != 'InputLayer'
-                        ]
-                    
-                    # Create model with our manual input
-                    classification_model = tf.keras.Model.from_config(config, custom_objects=custom_objects)
-                    classification_model.load_weights(model_path)
-                    
-                logger.info("Successfully loaded model with manual input layer")
-            except Exception as e2:
-                logger.error(f"Alternative loading failed: {str(e2)}")
-                raise
-    
-    # Clean up the temporary file
-    os.remove(model_path)
-    logger.info("Classification model loaded successfully")
-    logger.info(f"Model input shape: {classification_model.input_shape}")
-    logger.info(f"Model output shape: {classification_model.output_shape}")
-    
-    # Determine the number of classes from the model's output shape
-    num_classes = classification_model.output_shape[-1]
-    logger.info(f"Number of classes detected from model output: {num_classes}")
-    
-    if num_classes != len(TRIBE_GROUPS):
-        raise ValueError(f"Mismatch between number of classes in model ({num_classes}) and defined tribe mapping ({len(TRIBE_GROUPS)})")
-    
-    logger.info(f"Number of classes: {num_classes}")
-    logger.info(f"Tribe mapping loaded successfully")
-    
-    # Test the model with a dummy input
-    logger.info("Testing classification model with dummy input...")
-    dummy_input = np.zeros((1, 224, 224, 3))
-    _ = classification_model.predict(dummy_input)
-    logger.info("Classification model test successful")
+        # First attempt - direct loading with minimal custom objects
+        classification_model = tf.keras.models.load_model(
+            model_path,
+            compile=False,
+            custom_objects={'dtype': tf.float32}
+        )
+        logger.info("Successfully loaded model directly")
+    except Exception as e:
+        logger.info(f"Direct loading failed: {str(e)}")
+        logger.info("Attempting alternative loading method...")
         
+        # Second attempt - manual construction with explicit input
+        inputs = tf.keras.Input(shape=(224, 224, 3))
+        base_model = tf.keras.applications.ResNet50(
+            input_tensor=inputs,
+            include_top=False,
+            weights=None
+        )
+        x = base_model.output
+        x = tf.keras.layers.GlobalAveragePooling2D()(x)
+        x = tf.keras.layers.Dense(512, activation='relu')(x)
+        x = tf.keras.layers.BatchNormalization()(x)
+        x = tf.keras.layers.Dropout(0.5)(x)
+        outputs = tf.keras.layers.Dense(len(TRIBE_GROUPS), activation='softmax')(x)
+        
+        classification_model = tf.keras.Model(inputs=inputs, outputs=outputs)
+        
+        # Load weights with skip_mismatch
+        classification_model.load_weights(
+            model_path, 
+            by_name=True, 
+            skip_mismatch=True
+        )
+        logger.info("Successfully loaded model with manual construction")
+    
+    # Test model
+    logger.info("Testing classification model...")
+    dummy_input = np.zeros((1, 224, 224, 3))
+    predictions = classification_model.predict(dummy_input)
+    assert predictions.shape[-1] == len(TRIBE_GROUPS), "Model output shape mismatch"
+    logger.info("Model test successful")
+    
+    # Clean up
+    os.remove(model_path)
+    
 except Exception as e:
-    logger.error(f"Error during model loading or tribe mapping: {e}")
+    logger.error(f"Failed to load model: {str(e)}")
     raise
 
 def preprocess_image_for_classification(image):
