@@ -52,7 +52,6 @@ try:
         "float32": tf.float32
     }
     
-    # Add error handling and input layer workaround
     try:
         classification_model = tf.keras.models.load_model(temp_model_path, custom_objects=custom_objects)
     except TypeError as e:
@@ -67,23 +66,26 @@ try:
                     options=tf.saved_model.LoadOptions(experimental_io_device='/job:localhost')
                 )
             except:
-                # If that fails, try reconstructing the model
-                logger.info("Attempting model reconstruction...")
-                base_model = tf.keras.applications.ResNet50(
-                    include_top=False,
-                    weights=None,
-                    input_shape=(224, 224, 3)
-                )
-                x = tf.keras.layers.GlobalAveragePooling2D()(base_model.output)
-                x = tf.keras.layers.Dense(512, activation='relu')(x)
-                x = tf.keras.layers.BatchNormalization()(x)
-                x = tf.keras.layers.Dropout(0.5)(x)
-                outputs = tf.keras.layers.Dense(30, activation='softmax')(x)
-                classification_model = tf.keras.Model(inputs=base_model.input, outputs=outputs)
-                
-                # Load weights only
-                classification_model.load_weights(temp_model_path)
-            
+                # If that fails, try loading as h5 file directly
+                logger.info("Attempting to load h5 file directly...")
+                try:
+                    import h5py
+                    with h5py.File(temp_model_path, 'r') as f:
+                        model_config = f.attrs.get('model_config')
+                        if model_config is not None:
+                            import json
+                            model_config = json.loads(model_config.decode('utf-8'))
+                            classification_model = tf.keras.models.model_from_config(
+                                model_config,
+                                custom_objects=custom_objects
+                            )
+                            classification_model.load_weights(temp_model_path)
+                        else:
+                            raise ValueError("Could not find model architecture in h5 file")
+                except Exception as e:
+                    logger.error(f"Failed to load h5 file directly: {e}")
+                    raise
+    
     # Clean up the temporary file
     os.remove(temp_model_path)
     logger.info("Classification model loaded successfully")
