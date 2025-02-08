@@ -9,12 +9,17 @@ import gdown
 from tensorflow.keras.layers import Layer
 from layers import Cast  # Add this import
 import tempfile  # Add this import
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Replace the hardcoded token with environment variable
+BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-BOT_TOKEN = '7475345861:AAEgT7rv19-02BC7DxJzlO4qwdMvzB2_Vak'
 
 # Update these constants
 MODEL_ID = "1foeIsWYYmvr2UAoVyFSRhKPagsAmTLrs"  # ID for .h5 model
