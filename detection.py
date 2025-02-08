@@ -27,14 +27,23 @@ KERAS_MODEL_ID = "1XrWEZJWOluRv2nMUiGmifiLnvzKkfUY9"  # ID for .keras model
 MODEL_PATH = "new_best_model.h5"
 KERAS_MODEL_PATH = "new_best_model.keras"
 
+# Add at the top of the file
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TF logging
+
+# Add near the top after logger setup
+logger.setLevel(logging.DEBUG)  # Set to DEBUG level for more detailed logs
+
 def download_model():
     """Download the model file from Google Drive to a temporary location."""
-    logger.info("Downloading model from Google Drive...")
+    logger.debug("Starting model download...")
     temp_dir = tempfile.gettempdir()
     temp_model_path = os.path.join(temp_dir, "temp_model.h5")
+    logger.debug(f"Will save to temporary path: {temp_model_path}")
     
     url = f"https://drive.google.com/uc?export=download&id={MODEL_ID}"
+    logger.debug(f"Downloading from URL: {url}")
     gdown.download(url, temp_model_path, quiet=False)
+    logger.debug("Download completed")
     return temp_model_path
 
 # Remove the multiple model formats, just use one
@@ -47,7 +56,25 @@ try:
         "float16": tf.float16,
         "float32": tf.float32
     }
-    model = tf.keras.models.load_model(temp_model_path, custom_objects=custom_objects)
+    
+    # Add error handling and input layer workaround
+    try:
+        model = tf.keras.models.load_model(temp_model_path, custom_objects=custom_objects)
+    except TypeError as e:
+        if "batch_shape" in str(e):
+            logger.info("Attempting alternative model loading method...")
+            # Create a new input layer
+            inputs = tf.keras.Input(shape=(224, 224, 3))
+            # Load model without input layer
+            model = tf.keras.models.load_model(
+                temp_model_path, 
+                custom_objects=custom_objects,
+                compile=False
+            )
+            # Rebuild model with new input
+            outputs = model(inputs)
+            model = tf.keras.Model(inputs=inputs, outputs=outputs)
+            
     # Clean up the temporary file
     os.remove(temp_model_path)
 except Exception as e:

@@ -51,7 +51,25 @@ try:
         "float16": tf.float16,
         "float32": tf.float32
     }
-    classification_model = tf.keras.models.load_model(temp_model_path, custom_objects=custom_objects)
+    
+    # Add error handling and input layer workaround
+    try:
+        classification_model = tf.keras.models.load_model(temp_model_path, custom_objects=custom_objects)
+    except TypeError as e:
+        if "batch_shape" in str(e):
+            logger.info("Attempting alternative model loading method...")
+            # Create a new input layer
+            inputs = tf.keras.Input(shape=(224, 224, 3))
+            # Load model without input layer
+            classification_model = tf.keras.models.load_model(
+                temp_model_path, 
+                custom_objects=custom_objects,
+                compile=False
+            )
+            # Rebuild model with new input
+            outputs = classification_model(inputs)
+            classification_model = tf.keras.Model(inputs=inputs, outputs=outputs)
+            
     # Clean up the temporary file
     os.remove(temp_model_path)
     logger.info("Classification model loaded successfully")

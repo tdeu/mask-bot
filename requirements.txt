@@ -1,6 +1,6 @@
 python-telegram-bot==20.7
 Pillow==9.5.0
-tensorflow>=2.13.0
+tensorflow==2.13.0
 numpy>=1.22.0,<=1.24.3
 gdown>=4.7.1
 python-dotenv>=1.0.0
