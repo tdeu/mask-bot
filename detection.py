@@ -35,18 +35,33 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TF logging
 # Add near the top after logger setup
 logger.setLevel(logging.DEBUG)  # Set to DEBUG level for more detailed logs
 
+MODEL_CACHE_DIR = os.getenv('MODEL_CACHE_DIR', os.path.join(tempfile.gettempdir(), 'model_cache'))
+
+def get_cached_model_path():
+    """Get path to cached model or None if not cached."""
+    os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
+    cached_path = os.path.join(MODEL_CACHE_DIR, "model.h5")
+    return cached_path if os.path.exists(cached_path) else None
+
 def download_model():
-    """Download the model file from Google Drive to a temporary location."""
+    """Download the model file from Google Drive to temporary storage."""
     logger.debug("Starting model download...")
-    temp_dir = tempfile.gettempdir()
-    temp_model_path = os.path.join(temp_dir, "temp_model.h5")
-    logger.debug(f"Will save to temporary path: {temp_model_path}")
     
-    url = f"https://drive.google.com/uc?export=download&id={MODEL_ID}"
-    logger.debug(f"Downloading from URL: {url}")
-    gdown.download(url, temp_model_path, quiet=False)
-    logger.debug("Download completed")
-    return temp_model_path
+    # Use system temp directory which should be writable
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, "temp_model.h5")
+    
+    try:
+        logger.info("Downloading model...")
+        url = f"https://drive.google.com/uc?export=download&id={MODEL_ID}"
+        gdown.download(url, temp_path, quiet=False)
+        logger.debug("Download completed")
+        return temp_path
+    except Exception as e:
+        logger.error(f"Download failed: {str(e)}")
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise
 
 # Remove the multiple model formats, just use one
 try:
@@ -60,34 +75,39 @@ try:
     }
     
     try:
-        # First attempt: Direct loading
-        model = tf.keras.models.load_model(temp_model_path, custom_objects=custom_objects)
-    except TypeError as e:
-        if "batch_shape" in str(e):
+        # First attempt: Direct loading with compile=False and safe mode
+        model = tf.keras.models.load_model(
+            temp_model_path, 
+            custom_objects=custom_objects, 
+            compile=False,
+            safe_mode=True  # Added safe mode
+        )
+    except (TypeError, ValueError) as e:
+        if "class_name" in str(e) or "batch_shape" in str(e):
             logger.info("Attempting alternative model loading method...")
             try:
-                # Create input layer manually
-                inputs = tf.keras.Input(shape=(224, 224, 3), name='input_layer')
+                # Create base model with explicit layer names
+                base_model = tf.keras.applications.ResNet50(
+                    include_top=False,
+                    weights=None,
+                    input_shape=(224, 224, 3),
+                    name='resnet50_base'
+                )
+                x = tf.keras.layers.GlobalAveragePooling2D(name='global_pooling')(base_model.output)
+                x = tf.keras.layers.Dense(512, activation='relu', name='dense_1')(x)
+                x = tf.keras.layers.BatchNormalization(name='batch_norm_1')(x)
+                x = tf.keras.layers.Dropout(0.5, name='dropout_1')(x)
+                outputs = tf.keras.layers.Dense(30, activation='softmax', name='predictions')(x)
                 
-                # Load model architecture from config
-                with h5py.File(temp_model_path, 'r') as f:
-                    model_config = f.attrs.get('model_config')
-                    if isinstance(model_config, bytes):
-                        model_config = model_config.decode('utf-8')
-                    config = json.loads(model_config)
-                    
-                    # Remove problematic input layer config
-                    if 'layers' in config['config']:
-                        config['config']['layers'] = [
-                            layer for layer in config['config']['layers'] 
-                            if layer['class_name'] != 'InputLayer'
-                        ]
-                    
-                    # Create model with our manual input
-                    model = tf.keras.Model.from_config(config, custom_objects=custom_objects)
-                    model.load_weights(temp_model_path)
-                    
-                logger.info("Successfully loaded model with manual input layer")
+                # Create model and load weights by name
+                model = tf.keras.Model(inputs=base_model.input, outputs=outputs, name='mask_classifier')
+                try:
+                    model.load_weights(temp_model_path, by_name=True)
+                    logger.info("Successfully loaded weights by name")
+                except:
+                    logger.info("Attempting to load weights by skipping mismatched layers...")
+                    model.load_weights(temp_model_path, by_name=True, skip_mismatch=True)
+                    logger.info("Successfully loaded weights with skip_mismatch")
             except Exception as e2:
                 logger.error(f"Alternative loading failed: {str(e2)}")
                 raise

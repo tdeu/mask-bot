@@ -8,6 +8,7 @@ from layers import Cast  # Add this import
 import tempfile  # Add this import
 import json
 import h5py
+from detection import get_cached_model_path, download_model
 
 # Enable logging
 logging.basicConfig(
@@ -46,7 +47,7 @@ TRIBE_GROUPS = {
 
 try:
     logger.info("Loading classification model...")
-    temp_model_path = download_model()
+    model_path = get_cached_model_path() or download_model()
     custom_objects = {
         "Cast": Cast,
         "mixed_float16": tf.keras.mixed_precision.Policy('mixed_float16'),
@@ -56,7 +57,7 @@ try:
     
     try:
         # First attempt: Direct loading
-        classification_model = tf.keras.models.load_model(temp_model_path, custom_objects=custom_objects)
+        classification_model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
     except TypeError as e:
         if "batch_shape" in str(e):
             logger.info("Attempting alternative model loading method...")
@@ -65,7 +66,7 @@ try:
                 inputs = tf.keras.Input(shape=(224, 224, 3), name='input_layer')
                 
                 # Load model architecture from config
-                with h5py.File(temp_model_path, 'r') as f:
+                with h5py.File(model_path, 'r') as f:
                     model_config = f.attrs.get('model_config')
                     if isinstance(model_config, bytes):
                         model_config = model_config.decode('utf-8')
@@ -80,7 +81,7 @@ try:
                     
                     # Create model with our manual input
                     classification_model = tf.keras.Model.from_config(config, custom_objects=custom_objects)
-                    classification_model.load_weights(temp_model_path)
+                    classification_model.load_weights(model_path)
                     
                 logger.info("Successfully loaded model with manual input layer")
             except Exception as e2:
@@ -88,7 +89,7 @@ try:
                 raise
     
     # Clean up the temporary file
-    os.remove(temp_model_path)
+    os.remove(model_path)
     logger.info("Classification model loaded successfully")
     logger.info(f"Model input shape: {classification_model.input_shape}")
     logger.info(f"Model output shape: {classification_model.output_shape}")

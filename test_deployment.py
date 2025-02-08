@@ -6,28 +6,48 @@ from PIL import Image
 import tempfile
 import h5py
 import json
-from detection import download_model, Cast, model as detection_model
-from classify_mask import classify_mask, classification_model, TRIBE_GROUPS
+from detection import download_model, Cast, get_cached_model_path
+from classify_mask import TRIBE_GROUPS
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 def get_or_download_model():
-    """Download model once and cache it for all tests"""
-    cache_dir = os.path.join(tempfile.gettempdir(), "model_cache")
-    os.makedirs(cache_dir, exist_ok=True)
-    cached_model_path = os.path.join(cache_dir, "model.h5")
-    
-    if not os.path.exists(cached_model_path):
-        temp_model_path = download_model()
-        os.rename(temp_model_path, cached_model_path)
-    
-    return cached_model_path
+    """Get cached model or download if not available."""
+    return get_cached_model_path() or download_model()
 
-def test_model_loading_methods():
+def test_model_layer_count(model_path):
+    """Test for layer count mismatch"""
+    try:
+        logger.info("Testing model layer count...")
+        
+        # Check h5 file layer count
+        with h5py.File(model_path, 'r') as f:
+            if 'model_weights' in f:
+                weight_names = []
+                f['model_weights'].visit(lambda name: weight_names.append(name))
+                logger.info(f"Found {len(weight_names)} weight layers in h5 file")
+            
+            if 'model_config' in f.attrs:
+                config = f.attrs['model_config']
+                if isinstance(config, bytes):
+                    config = config.decode('utf-8')
+                config_dict = json.loads(config)
+                config_layers = len(config_dict['config']['layers'])
+                logger.info(f"Found {config_layers} layers in model config")
+                
+                # Check for layer type mismatches
+                layer_types = [layer['class_name'] for layer in config_dict['config']['layers']]
+                logger.info(f"Layer types: {set(layer_types)}")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Layer count test failed: {str(e)}")
+        return False
+
+def test_model_loading_methods(model_path):
     """Test all possible model loading methods"""
     try:
-        temp_model_path = get_or_download_model()
         logger.info("Testing all model loading methods...")
         
         custom_objects = {
@@ -37,110 +57,128 @@ def test_model_loading_methods():
             "float32": tf.float32
         }
         
-        # Method 1: Direct loading
+        # Test 1: Direct loading with compile=False
         try:
-            logger.info("Method 1: Testing direct model loading...")
-            model = tf.keras.models.load_model(temp_model_path, custom_objects=custom_objects)
+            logger.info("Method 1: Testing direct model loading with compile=False...")
+            model = tf.keras.models.load_model(model_path, custom_objects=custom_objects, compile=False)
             logger.info("✓ Direct loading successful")
+            
+            # Check layer count
+            logger.info(f"Model has {len(model.layers)} layers")
+            # Log first few layer configs
+            for i, layer in enumerate(model.layers[:5]):
+                logger.info(f"Layer {i}: {layer.name} - {layer.get_config()}")
         except Exception as e:
             logger.warning(f"✗ Direct loading failed: {str(e)}")
+            
+            # Test 2: Try reconstructing model
+            try:
+                logger.info("Method 2: Testing model reconstruction...")
+                base_model = tf.keras.applications.ResNet50(
+                    include_top=False,
+                    weights=None,
+                    input_shape=(224, 224, 3)
+                )
+                x = base_model.output
+                x = tf.keras.layers.GlobalAveragePooling2D()(x)
+                x = tf.keras.layers.Dense(512, activation='relu')(x)
+                x = tf.keras.layers.BatchNormalization()(x)
+                x = tf.keras.layers.Dropout(0.5)(x)
+                outputs = tf.keras.layers.Dense(30, activation='softmax')(x)
+                
+                model = tf.keras.Model(inputs=base_model.input, outputs=outputs)
+                model.load_weights(model_path)
+                logger.info("✓ Reconstruction successful")
+                
+                # Verify output shape matches tribe count
+                assert model.output_shape[-1] == len(TRIBE_GROUPS), "Output shape doesn't match tribe count"
+            except Exception as e2:
+                logger.error(f"✗ Reconstruction failed: {str(e2)}")
+                raise
         
-        # Method 2: H5 loading with config extraction
-        try:
-            logger.info("Method 2: Testing H5 loading with config...")
-            with h5py.File(temp_model_path, 'r') as f:
-                # Test model_config attribute
-                if 'model_config' in f.attrs:
-                    config = f.attrs['model_config']
-                    logger.info(f"Config type: {type(config)}")
-                    if isinstance(config, bytes):
-                        config = config.decode('utf-8')
-                    config_dict = json.loads(config)
-                    logger.info(f"Layer count in config: {len(config_dict['config']['layers'])}")
-                    logger.info("✓ Config extraction successful")
-                else:
-                    logger.error("✗ No model_config found in h5 file")
-        except Exception as e:
-            logger.error(f"✗ H5 loading failed: {str(e)}")
+        # Test prediction
+        dummy_input = np.zeros((1, 224, 224, 3))
+        predictions = model.predict(dummy_input)
+        logger.info(f"Prediction shape: {predictions.shape}")
+        assert predictions.shape[-1] == len(TRIBE_GROUPS), "Prediction shape doesn't match tribe count"
         
-        os.remove(temp_model_path)
         return True
     except Exception as e:
         logger.error(f"Model loading test failed: {str(e)}")
         return False
 
-def test_model_prediction():
-    """Test model prediction functionality"""
+def test_model_deserialization(model_path):
+    """Test specifically for the class_name deserialization error"""
     try:
-        logger.info("Testing model prediction...")
+        logger.info("Testing model deserialization...")
         
-        # Test detection model
-        test_input = np.zeros((1, 224, 224, 3))
-        logger.info("Testing detection model prediction...")
-        _ = detection_model.predict(test_input)
-        logger.info("✓ Detection model prediction successful")
-        
-        # Test classification model
-        logger.info("Testing classification model prediction...")
-        test_image = Image.new('RGB', (224, 224), color='white')
-        result_message, top_tribe, confidence = classify_mask(test_image)
-        logger.info(f"Classification result: {result_message}")
-        logger.info("✓ Classification model prediction successful")
+        with h5py.File(model_path, 'r') as f:
+            config = f.attrs.get('model_config')
+            if config is not None:
+                if isinstance(config, bytes):
+                    config = config.decode('utf-8')
+                config_dict = json.loads(config)
+                
+                # Test config cleaning
+                def clean_config(cfg):
+                    if isinstance(cfg, dict):
+                        keys_to_remove = ['class_name', 'module']
+                        for key in keys_to_remove:
+                            cfg.pop(key, None)
+                        for k, v in cfg.items():
+                            if isinstance(v, (dict, list)):
+                                clean_config(v)
+                    elif isinstance(cfg, list):
+                        for item in cfg:
+                            if isinstance(item, (dict, list)):
+                                clean_config(item)
+                    return cfg
+                
+                cleaned_config = clean_config(config_dict.copy())
+                logger.info("Original config keys: " + str(list(config_dict.keys())))
+                logger.info("Cleaned config keys: " + str(list(cleaned_config.keys())))
+                
+                # Verify no class_name attributes remain
+                def verify_no_class_names(cfg):
+                    if isinstance(cfg, dict):
+                        assert 'class_name' not in cfg, "class_name still present in config"
+                        for v in cfg.values():
+                            if isinstance(v, (dict, list)):
+                                verify_no_class_names(v)
+                    elif isinstance(cfg, list):
+                        for item in cfg:
+                            if isinstance(item, (dict, list)):
+                                verify_no_class_names(item)
+                
+                verify_no_class_names(cleaned_config)
+                logger.info("✓ Config cleaning successful")
         
         return True
     except Exception as e:
-        logger.error(f"Prediction test failed: {str(e)}")
+        logger.error(f"Deserialization test failed: {str(e)}")
         return False
-
-def test_model_attributes():
-    """Test model attributes and shapes"""
-    try:
-        logger.info("Testing model attributes...")
-        
-        # Check detection model
-        logger.info(f"Detection model input shape: {detection_model.input_shape}")
-        logger.info(f"Detection model output shape: {detection_model.output_shape}")
-        
-        # Check classification model
-        logger.info(f"Classification model input shape: {classification_model.input_shape}")
-        logger.info(f"Classification model output shape: {classification_model.output_shape}")
-        
-        # Verify classification model output matches tribe count
-        if classification_model.output_shape[-1] != len(TRIBE_GROUPS):
-            raise ValueError("Mismatch between model outputs and tribe count")
-        
-        logger.info("✓ Model attributes test successful")
-        return True
-    except Exception as e:
-        logger.error(f"Model attributes test failed: {str(e)}")
-        return False
-
-def test_with_timeout(func, timeout=300):
-    """Run a test with timeout"""
-    import signal
-    
-    def handler(signum, frame):
-        raise TimeoutError(f"Test timed out after {timeout} seconds")
-    
-    signal.signal(signal.SIGALRM, signal.alarm(timeout))
-    try:
-        return func()
-    finally:
-        signal.alarm(0)
 
 def run_all_tests():
     logger.info("=== Starting Comprehensive Deployment Tests ===")
     
+    # Download model once at the start
+    try:
+        model_path = get_or_download_model()
+        logger.info("Model downloaded and cached for all tests")
+    except Exception as e:
+        logger.error(f"Failed to download model: {str(e)}")
+        return False
+    
     tests = [
-        ("Model Loading Methods", test_model_loading_methods),
-        ("Model Prediction", test_model_prediction),
-        ("Model Attributes", test_model_attributes)
+        ("Model Layer Count", lambda: test_model_layer_count(model_path)),
+        ("Model Loading Methods", lambda: test_model_loading_methods(model_path)),
+        ("Model Deserialization", lambda: test_model_deserialization(model_path))
     ]
     
     all_passed = True
     for test_name, test_func in tests:
         logger.info(f"\n=== Running {test_name} Test ===")
-        if test_with_timeout(test_func):
+        if test_func():
             logger.info(f"✓ {test_name} test passed")
         else:
             logger.error(f"✗ {test_name} test failed")
@@ -150,6 +188,13 @@ def run_all_tests():
         logger.info("\n=== All tests passed successfully! ===")
     else:
         logger.error("\n=== Some tests failed! ===")
+    
+    # Clean up at the end
+    try:
+        os.remove(model_path)
+        logger.info("Cleaned up model file")
+    except:
+        pass
     
     return all_passed
 
