@@ -29,7 +29,8 @@ KERAS_MODEL_ID = "1XrWEZJWOluRv2nMUiGmifiLnvzKkfUY9"  # ID for .keras model
 MODEL_PATH = "new_best_model.h5"
 KERAS_MODEL_PATH = "new_best_model.keras"
 
-# Add at the top of the file
+# Force CPU usage to avoid GPU-related errors on Railway
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TF logging
 
 # Add near the top after logger setup
@@ -47,7 +48,7 @@ def download_model():
     """Download the model file from Google Drive to temporary storage."""
     logger.debug("Starting model download...")
     
-    # Use system temp directory which should be writable
+    # Use system temp directory which should be writable on Railway
     temp_dir = tempfile.gettempdir()
     temp_path = os.path.join(temp_dir, "temp_model.h5")
     
@@ -75,39 +76,32 @@ try:
     }
     
     try:
-        # First attempt: Direct loading with compile=False and safe mode
+        # First attempt: Simple loading without safe_mode (it's not supported in older TF versions)
         model = tf.keras.models.load_model(
             temp_model_path, 
             custom_objects=custom_objects, 
-            compile=False,
-            safe_mode=True  # Added safe mode
+            compile=False
         )
     except (TypeError, ValueError) as e:
         if "class_name" in str(e) or "batch_shape" in str(e):
             logger.info("Attempting alternative model loading method...")
             try:
-                # Create base model with explicit layer names
+                # Create base model without explicit names (can cause issues)
                 base_model = tf.keras.applications.ResNet50(
                     include_top=False,
                     weights=None,
-                    input_shape=(224, 224, 3),
-                    name='resnet50_base'
+                    input_shape=(224, 224, 3)
                 )
-                x = tf.keras.layers.GlobalAveragePooling2D(name='global_pooling')(base_model.output)
-                x = tf.keras.layers.Dense(512, activation='relu', name='dense_1')(x)
-                x = tf.keras.layers.BatchNormalization(name='batch_norm_1')(x)
-                x = tf.keras.layers.Dropout(0.5, name='dropout_1')(x)
-                outputs = tf.keras.layers.Dense(30, activation='softmax', name='predictions')(x)
+                x = base_model.output
+                x = tf.keras.layers.GlobalAveragePooling2D()(x)
+                x = tf.keras.layers.Dense(512, activation='relu')(x)
+                x = tf.keras.layers.BatchNormalization()(x)
+                x = tf.keras.layers.Dropout(0.5)(x)
+                outputs = tf.keras.layers.Dense(30, activation='softmax')(x)
                 
-                # Create model and load weights by name
-                model = tf.keras.Model(inputs=base_model.input, outputs=outputs, name='mask_classifier')
-                try:
-                    model.load_weights(temp_model_path, by_name=True)
-                    logger.info("Successfully loaded weights by name")
-                except:
-                    logger.info("Attempting to load weights by skipping mismatched layers...")
-                    model.load_weights(temp_model_path, by_name=True, skip_mismatch=True)
-                    logger.info("Successfully loaded weights with skip_mismatch")
+                model = tf.keras.Model(inputs=base_model.input, outputs=outputs)
+                model.load_weights(temp_model_path, by_name=True, skip_mismatch=True)
+                logger.info("Successfully loaded weights with skip_mismatch")
             except Exception as e2:
                 logger.error(f"Alternative loading failed: {str(e2)}")
                 raise
