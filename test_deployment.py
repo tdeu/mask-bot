@@ -6,7 +6,7 @@ from PIL import Image
 import h5py
 import json
 from detection import download_model, get_cached_model_path
-from classify_mask import TRIBE_GROUPS
+from config import TRIBE_GROUPS
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -103,6 +103,35 @@ def test_layer_compatibility(model_path):
         logger.error(f"Layer compatibility test failed: {str(e)}")
         return False
 
+def inspect_saved_model(model_path):
+    """Inspect the saved model structure and metadata"""
+    try:
+        logger.info("=== Inspecting Saved Model ===")
+        with h5py.File(model_path, 'r') as f:
+            # Check model metadata
+            logger.info("\nModel Metadata:")
+            for key, value in f.attrs.items():
+                if isinstance(value, bytes):
+                    value = value.decode()
+                logger.info(f"{key}: {value}")
+            
+            # Check TensorFlow version used for saving
+            if 'keras_version' in f.attrs:
+                logger.info(f"\nKeras version used for saving: {f.attrs['keras_version'].decode()}")
+            
+            # Examine layer structure
+            logger.info("\nLayer Structure:")
+            if 'model_weights' in f:
+                def print_layers(name, obj):
+                    if isinstance(obj, h5py.Dataset):
+                        logger.info(f"Layer: {name}, Shape: {obj.shape}, Dtype: {obj.dtype}")
+                f['model_weights'].visititems(print_layers)
+        
+        return True
+    except Exception as e:
+        logger.error(f"Model inspection failed: {str(e)}")
+        return False
+
 def run_deployment_tests():
     logger.info("=== Starting Deployment Verification Tests ===")
     
@@ -116,7 +145,8 @@ def run_deployment_tests():
     tests = [
         ("Weight Loading", lambda: test_model_weights_loading(model_path)),
         ("Input Layer Config", lambda: test_input_layer_config(model_path)),
-        ("Layer Compatibility", lambda: test_layer_compatibility(model_path))
+        ("Layer Compatibility", lambda: test_layer_compatibility(model_path)),
+        ("Model Inspection", lambda: inspect_saved_model(model_path))
     ]
     
     all_passed = True

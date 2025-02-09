@@ -12,6 +12,7 @@ import tempfile  # Add this import
 from dotenv import load_dotenv
 import json
 import h5py
+from config import TRIBE_GROUPS
 
 # Load environment variables
 load_dotenv()
@@ -117,40 +118,6 @@ try:
 except Exception as e:
     logger.error(f"Failed to load model: {str(e)}")
     raise
-
-# Define tribe mapping (copied from your classify_mask.py)
-TRIBE_GROUPS = {
-    0: "Benin/Yoruba",
-    1: "Burkina_Faso/Mossi",
-    2: "Cote d'Ivoire/Baoule",
-    3: "Cote d'Ivoire/Bete",
-    4: "Cote d'Ivoire/Dan_Yacouba",
-    5: "Cote d'Ivoire/Djimini",
-    6: "Cote d'Ivoire/Gouro",
-    7: "Cote d'Ivoire/Guro",
-    8: "Cote d'Ivoire/Kran",
-    9: "Cote d'Ivoire/Senoufo",
-    10: "Cote d'Ivoire/Yohoure",
-    11: "Gabon/Punu",
-    12: "Liberia/Grebo",
-    13: "Liberia/Guere",
-    14: "Mali/Bambara",
-    15: "Mali/Dogon",
-    16: "Nigeria/Eket",
-    17: "Nigeria/Idoma",
-    18: "Nigeria/Igbo",
-    19: "Nigeria/Yoruba",
-    20: "RDC/Chokwe",
-    21: "RDC/Hemba",
-    22: "RDC/Kuba",
-    23: "RDC/Lega",
-    24: "RDC/Luba",
-    25: "RDC/Mbala",
-    26: "RDC/Pende_Bapende",
-    27: "RDC/Salampasu",
-    28: "RDC/Songye",
-    29: "Tanzanie/Makonde"
-}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     keyboard = [
